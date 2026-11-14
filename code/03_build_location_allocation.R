@@ -8,7 +8,7 @@
 # Scripps Institution of Oceanography, UC San Diego
 
 #load packages; if on CRAN and not installed, install and load.
-{pacman::p_load(tidyverse,sf,janitor,here,tidycensus,terra,Require,viridis,
+{pacman::p_load(tidyverse,sf,janitor,here,tidycensus,terra,Require,viridis,lwgeom,
                 tigris,crsuggest,data.table,exactextractr,locationallocation)
   
   # Automatically check, download locationallocation package from GitHub if missing, and load it
@@ -56,8 +56,7 @@ wt = project(wt,"EPSG:4269")
 plot(wt)
 
 #heat surface
-heat = rast(here("data/clean/heat_index_n_days_103fthreshold_average.tif"))
-heat = project(heat,"EPSG:4269")
+heat = rast(here("data/clean/poi/san_diego/san_diego_heat_index_n_days_103fthreshold_binned.tif"))
 plot(heat)
 
 #population density (general)
@@ -74,15 +73,12 @@ plot(dens)
 
 #popdensity and risk
 densalign = resample(dens,wt, method = "bilinear")
-stack = c(wt,densalign)
-stack = sum(stack,na.rm=TRUE)
-plot(dens)
-plot(wt)
-plot(stack-dens)
-hist(stack)
-
-rm(heatalign,densalign)
-gc()
+droplowpopdensity = densalign
+droplowpopdensity[droplowpopdensity < 2] = 0
+hist(droplowpopdensity)
+stack = (densalign * wt) #/ minmax(wt)[2]
+plot(stack)
+#stack[stack == -Inf] = 0
 
 #cooldens#cool zones (2023 SD ones for now)
 #more: https://www.news.caloes.ca.gov/cooling-centers-and-resources-2/
@@ -131,7 +127,7 @@ if (method == "walk"){
 
   endtime = Sys.time()
   endtime - starttime
-  save(traveltime,file=here('data/clean/poi/san_diego/sd_traveltime_localloc_walking.RData'))
+ 
 }
 
 if (method == "fastest"){
@@ -149,8 +145,6 @@ if (method == "fastest"){
 
   endtime = Sys.time()
   endtime - starttime
-
-  save(traveltime,file=here('data/clean/poi/san_diego/sd_traveltime_localloc_fastestmethod.RData'))
 }
 
 
@@ -167,13 +161,24 @@ traveltime |>
     bb_area = poi,
     facilities = cz,
     contour_traveltime = 10) 
-ggsave(file=here(paste0('data/clean/poi/san_diego/traveltime_viz',method,'.png')),height=8,width=8, unit="in",dpi=300)
+ggsave(file=here(paste0('data/clean/poi/san_diego/traveltime_viz_',method,'.png')),height=8,width=8, unit="in",dpi=300)
+
+#greedy heuristic wants to put points in places with few people,
+#so we must force drop the geographies with places without people!
+heat = resample(heat,stack,method="bilinear")
+droplowpopdensity = densalign
+droplowpopdensity[droplowpopdensity < 2] = 0
+heatpopdensity =   droplowpopdensity*heat
+plot(  heatpopdensity )
+
+# stackheat = mean(c(stack,heat))
+# hist(stackheat)
 
 
-#slow! not working well...
+
 traveltime |>
     traveltime_stats(
-      demand = heat,
+      demand = heatpopdensity,
       breaks = c(5, 10, 15, 30), #minutes
       objectiveminutes = 10)
 ggsave(file=here(paste0('data/clean/poi/san_diego/traveltime_stats_',method,'.png')),height=8,width=8, unit="in",dpi=300)
@@ -207,16 +212,14 @@ raster::compareRaster(traveltime$travel_time,dens,wt,stack,
               res = FALSE, orig = FALSE, stopiffalse = FALSE)
 
 cz = st_transform(cz,st_crs(poi))
-
-plot(heat)
-
+plot()
 allocation_data =
   stack |>
     allocation(
       bb_area = poi,
       facilities = cz,
       traveltime = traveltime,
-      weights = heat,
+      weights = (heatpopdensity),
       objectiveminutes = 10,
       objectiveshare = 0.99,
       heur = "max",
@@ -226,50 +229,85 @@ allocation_data =
     )
 
 allocation_data |> 
-  allocation_plot(poi) 
+  allocation_plot(poi, facilities = cz) 
 ggsave(file=here(paste0('data/clean/poi/san_diego/san_diego_allocation_continuous_map_',method,'.png')),height=8,width=8, unit="in",dpi=300)
-
-temp + geom_sf(data=cz,colour = "blue")
-
-plot(dens)
-ggsave(file=here('data/clean/poi/san_diego/san_diego_allocation_continuous_map.png'),height=8,width=8, unit="in",dpi=300)
 
 
 
 #discrete
-locationallocation::
-allocation_data <-
-  dens |>
+{
+  starttime = Sys.time()
+  print(starttime)
+
+  
+  poi %>%
+  ggplot() +
+  geom_sf() +
+  geom_sf(data=poi %>% st_sample(1000),col="red")
+
+
+  discrete_allocation_data <-
+    stack |> 
+    allocation_discrete(
+      bb_area = poi,
+      candidate = poi |> st_sample(2000),
+      facilities = NULL,
+      n_fac = 12,
+      traveltime = traveltime,
+      weights = heatpopdensity,
+      objectiveminutes = 10,
+      objectiveshare = NULL,
+      approach = "norm",
+      #exp_demand = 1,
+      #exp_weights = 1,
+      par = TRUE
+    )
+  
+  endtime = Sys.time()
+  endtime - starttime 
+  
+  discrete_allocation_data |>
+    allocation_plot(poi, facilities = cz)
+  
+  ggsave(file=here(paste0('data/clean/poi/san_diego/san_diego_allocation_discrete_with_populationheatweight_',method,'.png')),height=8,width=8, unit="in",dpi=300)
+  
+
+}
+
+
+
+{
+#find facilities around existing ones
+discrete_allocation_data <-
+  stack |> 
   allocation_discrete(
     bb_area = poi,
-    candidate = poi |> st_sample(20),
+    candidate = poi |> st_sample(2000),
     facilities = cz,
-    n_fac = 5,
-    n_samples = 100,
-    traveltime = traveltime_data,
-    weights = NULL,
-    objectiveminutes = 15,
+    n_fac = 2,
+    traveltime = traveltime,
+    weights = heatpopdensity,
+    objectiveminutes = 10,
     objectiveshare = NULL,
     approach = "norm",
-    exp_demand = 1,
-    exp_weights = 1,
-    par = FALSE
+    #exp_demand = 1,
+    #exp_weights = 1,
+    par = TRUE
   )
 
+endtime = Sys.time()
+endtime - starttime 
 
-allocation_data <-
-  dens |>
-  allocation(
-    bb_area = poi,
-    facilities = cz,
-    traveltime = traveltime,
-    weights = NULL,
-    objectiveminutes = 15,
-    objectiveshare = 0.99,
-    heur = "max",
-    approach = "norm",
-    exp_demand = 1,
-    exp_weights = 1
-  )
-ggsave(file=here('data/clean/poi/san_diego/san_diego_allocation_continuous.png'),height=8,width=8, unit="in",dpi=300)
+discrete_allocation_data |>
+  allocation_plot(poi, facilities = cz)
+
+ggsave(file=here(paste0('data/clean/poi/san_diego/san_diego_allocation_discrete_with_populationheatweight_new_vs_existing_',method,'.png')),height=8,width=8, unit="in",dpi=300)
+
+
+}
+
+
+
+
+#### Sensitivity of heatpopdensity as (heat * )
 

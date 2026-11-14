@@ -151,5 +151,9 @@ st_write(svi,
          append = FALSE)
 
 #### LACE Air Conditioning Coverage 2023 ####
+#fine as is
 
 
+#### PRISM heat index ####
+
+#quantiles

@@ -67,18 +67,28 @@ retrees[1,1] = 0
 retrees = as.matrix(retrees,byrow=TRUE)
 trees = classify(trees,retrees,include.lowest = TRUE)
 
-plot(trees)
 
-#log-Impervious Surface:
+
+#Impervious Surface:
 imper = rast(here("data/clean/poi/san_diego/2025_sandiego_nlcd_fct_impervious.tif"))
+plot(imper)
 breaks <- global(imper, fun = quantile, probs = seq(0, 1,0.25), na.rm = TRUE)
 breaks <- as.numeric(breaks)
 breaks = unique(breaks)
-#simplify impervious surface -- we want less to be weighted higher for NEED
-newvals = seq(1,n_distinct(breaks),by=1)
+# #simplify impervious surface -- we want less to be weighted higher for NEED
+# newvals = seq(1,n_distinct(breaks),by=1)
+# reimper = cbind(lag(unique(breaks),n=1),unique(breaks),newvals)
+# reimper = ifelse(is.na(reimper),0,reimper)
+# reimper = as.matrix(reimper,byrow=TRUE)
+# imper = classify(imper,reimper,include.lowest = TRUE)
+# plot(imper)
+
+newvals = seq(0,n_distinct(breaks)-1,by=1)
 reimper = cbind(lag(unique(breaks),n=1),unique(breaks),newvals)
 reimper = ifelse(is.na(reimper),0,reimper)
 reimper = as.matrix(reimper,byrow=TRUE)
+reimper[2,1] = 1
+reimper
 imper = classify(imper,reimper,include.lowest = TRUE)
 plot(imper)
 
@@ -90,8 +100,6 @@ evi = log(evi)
 breaks <- global(evi, fun = quantile, probs = seq(0, 1,0.25), na.rm = TRUE)
 breaks <- as.numeric(breaks)
 breaks = unique(breaks)
-breaks
-hist(evi)
 #simplify and downweight evi -- we want less to be weighted higher for NEED
 newvals = rev(seq(1,n_distinct(breaks),by=1))
 reevi = cbind(unique(breaks),newvals)
@@ -283,8 +291,8 @@ plot(evi)
 
 #mean of:
 #tree canopy, evi, impervious surfaces, 
-#cdc svi, no AC, vulnerable population density (<18 years and 65 and older)
-stack = c(trees,evi,imper,wt,wt_dens)
+#cdc svi, no AC, NO vulnerable population density (<18 years and 65 and older)
+stack = c(trees,evi,imper,wt) #,wt_dens
 stack = terra::mean(stack,na.rm=TRUE)
 plot(stack)
 hist(stack)  #normal distribution
@@ -304,8 +312,20 @@ freq(stack) #5 is rare, 4 is also uncommon -- good allocation weighting
 writeRaster(stack, here("data/clean/poi/san_diego/san_diego_weighted_risk_surface.tif"),overwrite = TRUE)
 
 
-### Save general population density as poi-specific
+#mean of:
+#tree canopy, evi, impervious surfaces, 
+#cdc svi, no AC, YES vulnerable population density (<18 years and 65 and older)
+stack2 = c(trees,evi,imper,wt,wt_dens)
+stack2 = terra::mean(stack2,na.rm=TRUE)
+test = stack-stack2
+plot(test)
+plot(stack)
+plot(stack2)
+writeRaster(stack2, here("data/clean/poi/san_diego/san_diego_weighted_risk_surface_with_vulnerablepop.tif"),overwrite = TRUE)
 
+
+
+### Save general population density as poi-specific
 dens =readRDS(here('data/clean/ca_population_density_bysexage_5yr_acs_2023.rds'))
 
 dens = st_transform(dens,st_crs(poi))
@@ -320,7 +340,7 @@ dens = st_intersection(dens,poi)
 dens = dens[st_geometry_type(dens) %in% c("POLYGON", "MULTIPOLYGON"),]
 
 dens$popdensity = as.double(dens$popdensity)
-quantiles = quantile(dens$popdensity, seq(0,1,by=0.1), q = c(1:10))
+quantiles = quantile(dens$popdensity, seq(0,1,by=0.25), q = c(1:4))
 
 dens = 
   dens %>%
@@ -329,15 +349,18 @@ dens =
                               popdensity < quantiles[3] ~ 2,
                               popdensity < quantiles[4] ~ 3,
                               popdensity < quantiles[5] ~ 4,
+                              popdensity == quantiles[5] ~ 4,
                               popdensity < quantiles[6] ~ 5,
                               popdensity < quantiles[7] ~ 6,
                               popdensity < quantiles[8] ~ 7,
                               popdensity < quantiles[9] ~ 8,
                               popdensity < quantiles[10] ~ 9,
                               popdensity >= quantiles[10] ~ 10,
-                              is.na(popdensity) ~ 1,
+                              is.na(popdensity) ~ 888,
                               .default=999)) 
-
+# dens$popdens_q = log(dens$popdensity)
+table(dens$popdens_q)
+hist(dens$popdens_q)
 dens %>%
   ggplot() +
   geom_sf(aes(fill=popdens_q,color = after_scale(fill)),linewidth=0.1) +
@@ -350,4 +373,22 @@ densrast = rasterize(dens, trees, field = "popdens_q")
 writeRaster(densrast, here("data/clean/poi/san_diego/san_diego_general_population_density.tif"),overwrite = TRUE)
 
 
+#### PRISM heat index: bin ####
 
+
+#PRISM heat index binned:
+heat = rast(here("data/clean/heat_index_n_days_103fthreshold_average.tif"))
+breaks <- global(heat, fun = quantile, probs = seq(0, 1,0.25), na.rm = TRUE)
+breaks = as.numeric(breaks)
+
+#simplify heatvious surface -- we want less to be weighted higher for NEED
+newvals = seq(0,n_distinct(breaks)-1,by=1)
+reheat = cbind(lag(unique(breaks),n=1),unique(breaks),newvals)
+reheat = ifelse(is.na(reheat),0,reheat)
+reheat = as.matrix(reheat,byrow=TRUE)
+reheat[2,1] = 0.0000001
+reheat
+heat = classify(heat,reheat,include.lowest = TRUE)
+plot(heat)
+
+writeRaster(heat,here("data/clean/poi/san_diego/san_diego_heat_index_n_days_103fthreshold_binned.tif"),overwrite=TRUE)
